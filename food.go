@@ -4,68 +4,97 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+
+	"github.com/gorilla/schema"
 )
 
 type Food struct {
-	Id        uint64 `json:"id"`
-	Order_num int32  `json:"order_num"`
-	Picture   string `json:"picture"`
-	Price     uint32 `json:"price"`
-	Name      string `json:"name"`
-	Remark    string `json:"remark"`
+	Id       uint64 `json:"id"`
+	OrderNum int32  `json:"orderNum"`
+	Picture  string `json:"picture"`
+	Price    uint32 `json:"price"`
+	Name     string `json:"name"`
+	Remark   string `json:"remark"`
 }
 
 type GetFoodListRequest struct {
-	Num      uint32
-	Passback string
+	Cursor string `schema:"cursor"`
+	Num    uint32 `schema:"num"`
 }
 
 type GetFoodListResponse struct {
-	Has_more  bool   `json:"has_more"`
-	Pass_back string `json:"pass_back"`
-	Food_list []Food `json:"food_list"`
+	Cursor   string `json:"cursor"`
+	HasMore  bool   `json:"hasMore"`
+	FoodList []Food `json:"foodList"`
 }
 
 func getFoodListHandler(w http.ResponseWriter, r *http.Request) {
-	res := &JsonResponse{}
-	defer log.Printf("%v %v %v %+v\n", r.RemoteAddr, r.Method, r.URL, res)
 	ctx := NewContext(w, r)
 	err := r.ParseForm()
 	if err != nil {
-		log.Printf("parseForm err:%v\n", err)
-		res.Code = 403
-		res.Message = "invalid request"
-		ctx.SetJsonResponse(res)
+		ctx.SetJsonResponse(&JsonResponse{Code: 403, Message: "invalid request"})
 		return
 	}
-	query := fmt.Sprintf("select id,order_num,picture,price,name,remark from %v.%v ", conf.Database.Database, conf.Database.FoodTable)
-	query += fmt.Sprintf(" order by order_num limit %v", 10)
-	err = db.Ping()
+	decoder := schema.NewDecoder()
+	decoder.IgnoreUnknownKeys(true)
+	req := &GetFoodListRequest{}
+	err = decoder.Decode(req, ctx.Request.Form)
 	if err != nil {
-		log.Printf("db err:%v\n", err)
-		db, err = NewDB(&conf.Database.DBConf)
+		ctx.SetJsonResponse(&JsonResponse{Code: 403, Message: "invalid request"})
+		return
+	}
+	cursor := uint64(0)
+	if req.Cursor != "" {
+		cursor, err = strconv.ParseUint(req.Cursor, 10, 64)
 		if err != nil {
-			res.Code = 500
-			res.Message = "lost connection to database"
-			ctx.SetJsonResponse(res)
+			ctx.SetJsonResponse(&JsonResponse{Code: 403, Message: "invalid request"})
 			return
 		}
 	}
-	food := &Food{}
-	err = db.QueryRow(query).Scan(&food.Id, &food.Order_num, &food.Picture, &food.Price, &food.Name, &food.Remark)
-	if err != nil {
-		log.Printf("db err:%v\n", err)
-		res.Code = 500
-		res.Message = "query failed"
-		ctx.SetJsonResponse(res)
+	if req.Num == 0 || req.Num > 30 {
+		ctx.SetJsonResponse(&JsonResponse{Code: 403, Message: "invalid request"})
 		return
 	}
-	data := GetFoodListResponse{
-		Has_more: false,
-		Food_list: []Food{
-			*food,
-		},
+	query := fmt.Sprintf("select id,order_num,picture,price,name,remark from %v.%v", conf.Database.Database, conf.Database.FoodTable)
+	if cursor > 0 {
+		query += fmt.Sprintf(" where order_num>%v", cursor)
 	}
-	res.Data = data
-	ctx.SetJsonResponse(res)
+	query += fmt.Sprintf(" order by order_num limit %v", req.Num+1)
+	log.Printf("sql:%v\n", query)
+	err = db.Ping()
+	if err != nil {
+		log.Printf("db err:%v\n", err)
+		ctx.SetJsonResponse(&JsonResponse{Code: 500, Message: "database error"})
+		return
+	}
+	rows, err := db.Query(query)
+	if err != nil {
+		log.Printf("db err:%v\n", err)
+		ctx.SetJsonResponse(&JsonResponse{Code: 500, Message: "database error"})
+		return
+	}
+	if rows == nil {
+		ctx.SetJsonResponse(&JsonResponse{Code: 0, Message: "ok"})
+		return
+	}
+	data := GetFoodListResponse{}
+	for rows.Next() {
+		food := &Food{}
+		err = rows.Scan(&food.Id, &food.OrderNum, &food.Picture, &food.Price, &food.Name, &food.Remark)
+		if err != nil {
+			log.Printf("db err:%v\n", err)
+			ctx.SetJsonResponse(&JsonResponse{Code: 500, Message: "database error"})
+			return
+		}
+		data.FoodList = append(data.FoodList, *food)
+		if len(data.FoodList) >= int(req.Num) {
+			break
+		}
+	}
+	data.HasMore = rows.Next()
+	if len(data.FoodList) > 0 {
+		data.Cursor = fmt.Sprintf("%v", data.FoodList[len(data.FoodList)-1].OrderNum)
+	}
+	ctx.SetJsonResponse(&JsonResponse{Code: 0, Message: "ok", Data: data})
 }

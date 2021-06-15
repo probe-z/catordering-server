@@ -33,7 +33,7 @@ type JsonResponse struct {
 	Data    interface{} `json:"data"`
 }
 
-// NewContext
+// new context
 func NewContext(w http.ResponseWriter, r *http.Request) *HttpRequestContext {
 	ctx := &HttpRequestContext{
 		Request:        r,
@@ -46,8 +46,10 @@ func NewContext(w http.ResponseWriter, r *http.Request) *HttpRequestContext {
 // set json response
 func (ctx *HttpRequestContext) SetJsonResponse(res *JsonResponse) error {
 	ctx.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")
+	ctx.Response = res
 	encoder := json.NewEncoder(ctx.ResponseWriter)
 	encoder.SetEscapeHTML(ctx.HTMLEscape)
+	log.Printf("%v %v %v %+v\n", ctx.Request.RemoteAddr, ctx.Request.Method, ctx.Request.URL, ctx.Response)
 	return encoder.Encode(res)
 }
 
